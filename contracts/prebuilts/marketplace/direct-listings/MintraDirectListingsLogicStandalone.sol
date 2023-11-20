@@ -23,7 +23,7 @@ import { CurrencyTransferLib } from "../../../lib/CurrencyTransferLib.sol";
 /**
  * @author  thirdweb.com
  */
-contract DirectListingsLogic is IDirectListings, Multicall, ReentrancyGuard, ERC2771ContextConsumer {
+contract MintraDirectListingsLogicStandalone is IDirectListings, Multicall, ReentrancyGuard, ERC2771ContextConsumer {
     /*///////////////////////////////////////////////////////////////
                         Mintra
     //////////////////////////////////////////////////////////////*/
