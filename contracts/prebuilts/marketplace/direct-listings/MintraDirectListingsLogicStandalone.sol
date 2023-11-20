@@ -33,8 +33,10 @@ contract DirectListingsLogic is IDirectListings, Multicall, ReentrancyGuard, ERC
     }
 
     address public wizard;
+    address private mintTokenAddress;
     address public platformFeeRecipient;
-    uint16 public platformFeeBps = 225;
+    uint256 public platformFeeBps = 225;
+    uint256 public platformFeeBpsMint = 150;
     mapping(address => Royalty) public royalties;
 
     /*///////////////////////////////////////////////////////////////
@@ -58,18 +60,6 @@ contract DirectListingsLogic is IDirectListings, Multicall, ReentrancyGuard, ERC
 
     modifier onlyWizard() {
         require(msg.sender == wizard, "Not Wizard");
-        _;
-    }
-
-    /// @dev Checks whether the caller has LISTER_ROLE.
-    modifier onlyListerRole() {
-        require(Permissions(address(this)).hasRoleWithSwitch(LISTER_ROLE, _msgSender()), "!LISTER_ROLE");
-        _;
-    }
-
-    /// @dev Checks whether the caller has ASSET_ROLE.
-    modifier onlyAssetRole(address _asset) {
-        require(Permissions(address(this)).hasRoleWithSwitch(ASSET_ROLE, _asset), "!ASSET_ROLE");
         _;
     }
 
@@ -97,10 +87,12 @@ contract DirectListingsLogic is IDirectListings, Multicall, ReentrancyGuard, ERC
 
     constructor(
         address _nativeTokenWrapper,
+        address _mintTokenAddress,
         address _platformFeeRecipient,
         address _wizard
     ) {
         nativeTokenWrapper = _nativeTokenWrapper;
+        mintTokenAddress = _mintTokenAddress;
         platformFeeRecipient = _platformFeeRecipient;
         wizard = _wizard;
     }
@@ -112,8 +104,6 @@ contract DirectListingsLogic is IDirectListings, Multicall, ReentrancyGuard, ERC
     /// @notice List NFTs (ERC721 or ERC1155) for sale at a fixed price.
     function createListing(ListingParameters calldata _params)
         external
-        onlyListerRole
-        onlyAssetRole(_params.assetContract)
         returns (uint256 listingId)
     {
         listingId = _getNextListingId();
@@ -158,7 +148,6 @@ contract DirectListingsLogic is IDirectListings, Multicall, ReentrancyGuard, ERC
     function updateListing(uint256 _listingId, ListingParameters memory _params)
         external
         onlyExistingListing(_listingId)
-        onlyAssetRole(_params.assetContract)
         onlyListingCreator(_listingId)
     {
         address listingCreator = _msgSender();
@@ -539,7 +528,14 @@ contract DirectListingsLogic is IDirectListings, Multicall, ReentrancyGuard, ERC
 
         // Payout platform fee
         {
-            uint256 platformFeeCut = (_totalPayoutAmount * platformFeeBps) / MAX_BPS;
+            uint256 platformFeeCut;
+
+            // Descrease platform fee for mint token
+            if (_currencyToUse == mintTokenAddress) {
+                platformFeeCut = (_totalPayoutAmount * platformFeeBpsMint) / MAX_BPS;
+            } else {
+                platformFeeCut = (_totalPayoutAmount * platformFeeBps) / MAX_BPS;
+            }
 
             // Transfer platform fee
             CurrencyTransferLib.transferCurrencyWithWrapper(
@@ -556,36 +552,33 @@ contract DirectListingsLogic is IDirectListings, Multicall, ReentrancyGuard, ERC
         // Payout royalties
         {
             // Get royalty recipients and amounts
-            (address payable[] memory recipients, uint256[] memory amounts) = RoyaltyPaymentsLogic(address(this))
-                .getRoyalty(_listing.assetContract, _listing.tokenId, _totalPayoutAmount);
+            (address royaltyRecipient, uint256 royaltyAmount) = processRoyalty(
+                _listing.assetContract,
+                _listing.tokenId,
+                _totalPayoutAmount
+            );
 
-            uint256 royaltyRecipientCount = recipients.length;
+            if (royaltyAmount > 0) {
+                // Check payout amount remaining is enough to cover royalty payment
+                require(amountRemaining >= royaltyAmount, "fees exceed the price");
 
-            if (royaltyRecipientCount != 0) {
-                uint256 royaltyCut;
-                address royaltyRecipient;
+                // Transfer royalty
+                CurrencyTransferLib.transferCurrencyWithWrapper(
+                    _currencyToUse,
+                    _payer,
+                    royaltyRecipient,
+                    royaltyAmount,
+                    _nativeTokenWrapper
+                );
 
-                for (uint256 i = 0; i < royaltyRecipientCount; ) {
-                    royaltyRecipient = recipients[i];
-                    royaltyCut = amounts[i];
-
-                    // Check payout amount remaining is enough to cover royalty payment
-                    require(amountRemaining >= royaltyCut, "fees exceed the price");
-
-                    // Transfer royalty
-                    CurrencyTransferLib.transferCurrencyWithWrapper(
-                        _currencyToUse,
-                        _payer,
-                        royaltyRecipient,
-                        royaltyCut,
-                        _nativeTokenWrapper
-                    );
-
-                    unchecked {
-                        amountRemaining -= royaltyCut;
-                        ++i;
-                    }
-                }
+                emit RoyaltyTransfered(
+                    _listing.assetContract,
+                    _listing.tokenId,
+                    _listing.listingId,
+                    _totalPayoutAmount,
+                    royaltyAmount,
+                    royaltyRecipient
+                );
             }
         }
 
